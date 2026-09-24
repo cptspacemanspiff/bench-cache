@@ -24,7 +24,7 @@ repos:
         entry: uv run --frozen mypy
         language: system
         types_or: [python, pyi]
-        pass_filenames: false # checks all of src, per [tool.mypy]
+        pass_filenames: false # checks src and tests, per [tool.mypy]
       - id: deptry
         name: deptry
         entry: uv run --frozen deptry src

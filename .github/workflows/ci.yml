@@ -19,6 +19,7 @@ jobs:
       - run: uv sync --locked
       # The same hooks as a local commit: lock check, ruff, mypy, deptry.
       - run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
+      - run: uv run --frozen pytest
 
   # Build the wheel and run it from a clean environment, as an installed user would,
   # so a missing package file or dependency shows up here rather than at release.
