@@ -141,9 +141,12 @@ uv sync
 uv run bench-cache list            # run the CLI from the checkout
 uv run pre-commit install          # run the checks on every commit
 uv run pre-commit run --all-files  # or run them by hand
+uv run pytest                      # unit tests
 ```
 
-The hooks check that `uv.lock` matches `pyproject.toml`, then run ruff (lint and format), mypy (strict) and deptry (declared vs. imported dependencies). Every tool comes from the dev group, so versions are pinned by `uv.lock`. CI (`.github/workflows/ci.yml`) runs the same hooks on pushes to `main` and on pull requests, then builds the wheel and runs it from a clean environment on each supported Python. Tool settings are in `pyproject.toml`.
+The hooks check that `uv.lock` matches `pyproject.toml`, then run ruff (lint and format), mypy (strict, over `src` and `tests`) and deptry (declared vs. imported dependencies). Every tool comes from the dev group, so versions are pinned by `uv.lock`. CI (`.github/workflows/ci.yml`) runs the same hooks and the unit tests on pushes to `main` and on pull requests, then builds the wheel and runs it from a clean environment on each supported Python. Tool settings are in `pyproject.toml`.
+
+The tests in `tests/` need no API keys: they drive conversations against a pydantic-ai `FunctionModel` that records each request. `test_branching.py` checks that every scenario's prefix tree forks exactly where its parameters say, and that each turn's request extends its parent's.
 
 ## Releasing
 
