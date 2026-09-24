@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -16,3 +19,18 @@ jobs:
       - run: uv sync --locked
       # The same hooks as a local commit: lock check, ruff, mypy, deptry.
       - run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
+
+  # Build the wheel and run it from a clean environment, as an installed user would,
+  # so a missing package file or dependency shows up here rather than at release.
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv build
+      - run: uv run --isolated --no-project --python ${{ matrix.python }} --with dist/*.whl bench-cache list

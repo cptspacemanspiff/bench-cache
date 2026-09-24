@@ -3,15 +3,21 @@
 Benchmarks how well LLM providers reuse cached prompts across multi-turn conversations. Built on pydantic-ai.
 
 ```sh
-uv run bench-cache list
-uv run bench-cache run linear -t openrouter-responses:deepseek/deepseek-v4-flash -p n_turns=10 -p turn_tokens=3000
-uv run bench-cache run linear -t openai:gpt-5-mini -t google:gemini-2.5-flash
-uv run bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3      # A -> B, then B -> C1, C2, C3
-uv run bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3,2    # ... and each C splits in 2 again
-uv run bench-cache hosts openrouter:deepseek/deepseek-v4-flash      # upstream host slugs + cache pricing
-uv run bench-cache run linear -t openrouter:deepseek/deepseek-v4-flash@streamlake -t openrouter:deepseek/deepseek-v4-flash@baidu
-uv run bench-cache run basic -T default -n 5                            # a built-in suite of cases against a built-in targets list
-uv run bench-cache run my-suite.toml -T my-targets.toml -n 5            # your own suite and targets files
+uv tool install bench-cache    # or: pipx install bench-cache
+```
+
+Only the OpenAI-compatible SDK comes with it, which covers OpenRouter and OpenAI. For another pydantic-ai provider, add its extra, e.g. `uv tool install bench-cache --with 'pydantic-ai-slim[google]'`.
+
+```sh
+bench-cache list
+bench-cache run linear -t openrouter-responses:deepseek/deepseek-v4-flash -p n_turns=10 -p turn_tokens=3000
+bench-cache run linear -t openai:gpt-5-mini -t google:gemini-2.5-flash
+bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3      # A -> B, then B -> C1, C2, C3
+bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3,2    # ... and each C splits in 2 again
+bench-cache hosts openrouter:deepseek/deepseek-v4-flash      # upstream host slugs + cache pricing
+bench-cache run linear -t openrouter:deepseek/deepseek-v4-flash@streamlake -t openrouter:deepseek/deepseek-v4-flash@baidu
+bench-cache run basic -T default -n 5                    # a built-in suite of cases against a built-in targets list
+bench-cache run my-suite.toml -T my-targets.toml -n 5    # your own suite and targets files
 ```
 
 A target is `provider:model_id`. `openrouter` (Chat Completions) and `openrouter-responses` (Responses API) have their own settings in `targets.py`. Any other prefix goes to pydantic-ai's `infer_model`, so every provider pydantic-ai supports works, with that provider's usual API key variable (e.g. `OPENAI_API_KEY`). Its SDK must be installed, and only the `openai` extra is by default. Providers that cache only at explicit breakpoints (Anthropic, Bedrock) have no factory yet, so they will show no cache reads.
@@ -132,8 +138,22 @@ A `hit` turn passes only if it read more from cache than the previous turn (its 
 
 ```sh
 uv sync
+uv run bench-cache list            # run the CLI from the checkout
 uv run pre-commit install          # run the checks on every commit
 uv run pre-commit run --all-files  # or run them by hand
 ```
 
-The hooks check that `uv.lock` matches `pyproject.toml`, then run ruff (lint and format), mypy (strict) and deptry (declared vs. imported dependencies). Every tool comes from the dev group, so versions are pinned by `uv.lock`. CI (`.github/workflows/ci.yml`) runs the same hooks on pushes to `main` and on pull requests. Tool settings are in `pyproject.toml`.
+The hooks check that `uv.lock` matches `pyproject.toml`, then run ruff (lint and format), mypy (strict) and deptry (declared vs. imported dependencies). Every tool comes from the dev group, so versions are pinned by `uv.lock`. CI (`.github/workflows/ci.yml`) runs the same hooks on pushes to `main` and on pull requests, then builds the wheel and runs it from a clean environment on each supported Python. Tool settings are in `pyproject.toml`.
+
+## Releasing
+
+The version lives in `pyproject.toml`. To release, bump it, commit, and push a matching `v` tag:
+
+```sh
+uv version --bump minor            # or patch / major
+git commit -am "Release v$(uv version --short)"
+git tag "v$(uv version --short)"
+git push origin main "v$(uv version --short)"
+```
+
+The tag starts `.github/workflows/release.yml`. It runs the checks, fails if the tag doesn't match the version, builds and smoke-tests the package, then publishes it to PyPI by trusted publishing (no API token) from the `pypi` environment, and creates a GitHub release with generated notes and the built files.

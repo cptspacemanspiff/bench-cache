@@ -1,0 +1,65 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds, checks and publishes that version to PyPI, then
+# creates a GitHub release with the same files. The tag must match the version in
+# pyproject.toml (bump it with `uv version --bump patch|minor|major`).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
+      - name: Tag matches pyproject version
+        run: |
+          version="$(uv version --short)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
+            exit 1
+          fi
+      - run: uv build
+      - run: uv run --isolated --no-project --with dist/*.whl bench-cache list
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted publishing: PyPI accepts this job's OIDC token, so no API token is stored.
+    # Add required reviewers to this environment to approve each release by hand.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/bench-cache/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  github-release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -3,14 +3,36 @@ name = "bench-cache"
 version = "0.1.0"
 description = "Benchmark effective prompt-cache rates of LLM providers across multi-turn conversations"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Nicholas Long", email = "19273992+cptspacemanspiff@users.noreply.github.com" }
+]
+keywords = ["llm", "prompt-caching", "benchmark", "pydantic-ai", "openrouter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Benchmark",
 ]
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib>=3.11.2",
     "pydantic-ai-slim[openai]>=2.49.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cptspacemanspiff/bench-cache"
+Repository = "https://github.com/cptspacemanspiff/bench-cache"
+Issues = "https://github.com/cptspacemanspiff/bench-cache/issues"
+Releases = "https://github.com/cptspacemanspiff/bench-cache/releases"
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12.0"]
