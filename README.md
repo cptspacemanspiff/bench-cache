@@ -53,7 +53,9 @@ A `hit` turn passes only if it read more from cache than the previous turn. The 
 ## Development
 
 ```sh
-uv run ruff check && uv run ruff format --check && uv run mypy
+uv sync
+uv run pre-commit install          # run the checks on every commit
+uv run pre-commit run --all-files  # or run them by hand
 ```
 
-Ruff and mypy settings are in `pyproject.toml`. mypy runs in strict mode.
+The hooks check that `uv.lock` matches `pyproject.toml`, then run ruff (lint and format), mypy (strict) and deptry (declared vs. imported dependencies). Every tool comes from the dev group, so versions are pinned by `uv.lock`. CI (`.github/workflows/ci.yml`) runs the same hooks on pushes to `main` and on pull requests. Tool settings are in `pyproject.toml`.
