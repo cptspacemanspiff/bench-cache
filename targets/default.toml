@@ -1,5 +1,5 @@
 # Targets to run a suite against, combined with any -t on the command line.
 targets = [
-    "openrouter:deepseek/deepseek-v4-flash@streamlake",
-    "openrouter:openai/openai/gpt-6-luna@openai",
+    # "openrouter:deepseek/deepseek-v4.1-flash@streamlake",
+    "openrouter:openai/gpt-6-luna@openai",
 ]
