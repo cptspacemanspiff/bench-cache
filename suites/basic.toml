@@ -1,0 +1,30 @@
+# A reproducible workload: which conversations to run, with every parameter fixed.
+# Targets and repeats are chosen per run, e.g.
+#   uv run bench-cache run suites/basic.toml -T targets/default.toml -n 5
+
+description = "Linear multi-turn and branching conversations"
+
+[[case]]
+name = "linear"  # A -> B -> ... (10 turns)
+scenario = "linear"
+params = { n_turns = 10, turn_tokens = 3000 }
+
+[[case]]
+name = "branch-t2-w4"  # branch at turn 2 into 4
+scenario = "branch"
+params = { trunk = 2, branches = 4 }
+
+[[case]]
+name = "branch-long"  # branch at turn 2 into 2, each branch 3 turns long
+scenario = "branch"
+params = { trunk = 2, branches = 2, branch_turns = 3 }
+
+[[case]]
+name = "nested"  # branch at turn 2 into 3, then each of those into 2
+scenario = "branch"
+params = { trunk = 2, branches = [3, 2] }
+
+[[case]]
+name = "deep"  # 5-turn trunk; 5 branches of 5 turns from turn 3 and from turn 5 (55 turns, leaves at depth 8 and 10)
+scenario = "branch"
+params = { trunk = 5, branch_at = [3, 5], branches = 5, branch_turns = 5, turn_tokens = 1500 }

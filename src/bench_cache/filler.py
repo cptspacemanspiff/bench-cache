@@ -1,4 +1,6 @@
-"""Deterministic filler text of an approximate token size, for padding prompts.
+"""Deterministic filler text of an approximate token size, and the system prompt
+that goes with it. Every built-in scenario uses both; they differ only in the
+shape of the conversation.
 
 Words are drawn from a fixed list of short, common English words, which most
 BPE tokenizers encode as one token each (with the leading space). This makes
@@ -47,3 +49,13 @@ def filler(n_tokens: int, *, tag: str = "", seed: int = 0) -> str:
     lines = [" ".join(words[i : i + WORDS_PER_LINE]) for i in range(0, len(words), WORDS_PER_LINE)]
     head = f"[{tag}]\n" if tag else ""
     return head + "\n".join(lines)
+
+
+def ok_system(key: str) -> str:
+    """A system prompt telling the model to reply only "OK", so its replies add almost
+    nothing to the history. The session key comes first, so turn 1 can't hit the cache."""
+    return f"""[session {key}]
+
+This conversation is an automated test of prompt caching. User messages contain
+meaningless filler text. Do not read, analyze, summarize, or comment on it.
+Reply to every message with exactly: OK"""

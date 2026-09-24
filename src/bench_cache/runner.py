@@ -87,6 +87,8 @@ class TurnStats:
 
 @dataclass
 class ConversationResult:
+    case: str
+    """The suite case this conversation ran; the scenario name when run without a suite."""
     scenario: str
     target: str
     run_key: str
@@ -116,6 +118,7 @@ async def run_conversation(
     target: Target,
     scenario: Scenario,
     *,
+    case: str | None = None,
     repeat: int = 0,
     turn_delay_s: float = 0.0,
 ) -> ConversationResult:
@@ -163,6 +166,7 @@ async def run_conversation(
         turns.append(stats)
 
     return ConversationResult(
+        case=case or scenario.name,
         scenario=scenario.name,
         target=target.name,
         run_key=run_key,

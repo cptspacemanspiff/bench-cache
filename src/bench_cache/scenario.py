@@ -76,7 +76,7 @@ class Scenario:
 
 # Scenarios generated in code ship with the package; hand-written prompt
 # sequences live as files in the prompts folder (which wins on a name clash).
-BUILTIN_SCENARIOS = {"ok_filler": "bench_cache.ok_filler", "branch": "bench_cache.branch"}
+BUILTIN_SCENARIOS = {"linear": "bench_cache.linear", "branch": "bench_cache.branch"}
 
 
 def list_scenarios(prompts_dir: Path = DEFAULT_PROMPTS_DIR) -> list[str]:

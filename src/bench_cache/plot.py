@@ -112,7 +112,10 @@ def _run_slots(pos: dict[int, tuple[int, int]], n_runs: int) -> dict[tuple[int, 
 def _header(fig: Figure, title: str, first: Row) -> None:
     height = fig.get_figheight()
     params = " ".join(f"{k}={v}" for k, v in (first.get("params") or {}).items())
-    fig.text(0.01, 1 - 0.15 / height, f"{title}: {first['scenario']}", fontweight="bold", va="top")
+    name = first["scenario"]
+    if first.get("case", name) != name:  # a suite case: show which scenario it runs
+        name = f"{first['case']} ({name})"
+    fig.text(0.01, 1 - 0.15 / height, f"{title}: {name}", fontweight="bold", va="top")
     fig.text(0.01, 1 - 0.42 / height, params, color=TEXT_2, fontsize=9, va="top")
 
 
@@ -232,7 +235,12 @@ def plot_cached(jsonl: Path, out: Path) -> Path:
     for lane in range(1, n_lanes):
         first_turn = min(turn for turn, (_, turn_lane) in pos.items() if turn_lane == lane)
         fork = parents[first_turn]
-        origin = f"turn {pos[fork][0]}" if fork in pos else "the system prompt"
+        if fork not in pos:
+            origin = "the system prompt"
+        elif n_lanes > 2:  # say which branch it forks from; with nested branches several share a turn
+            origin = f"branch {pos[fork][1] + 1} turn {pos[fork][0]}"
+        else:
+            origin = f"turn {pos[fork][0]}"
         handles.append(Line2D([], [], color=_lane_color(lane), lw=2, label=f"branch {lane + 1} (from {origin})"))
     handles += [
         Line2D([], [], color=TEXT_2, marker="o", ls="", ms=6, label="hit: cached grew"),

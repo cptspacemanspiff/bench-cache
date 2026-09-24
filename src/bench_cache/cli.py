@@ -6,8 +6,10 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
@@ -17,6 +19,7 @@ from pydantic_ai.exceptions import ModelHTTPError, UserError
 from .plot import render
 from .runner import ConversationResult, run_conversation
 from .scenario import DEFAULT_PROMPTS_DIR, list_scenarios, load_scenario
+from .suite import Suite, load_suite, load_targets_file, single
 from .targets import FACTORIES, list_hosts, resolve_target
 
 DEFAULT_RESULTS_DIR = Path("results")
@@ -24,7 +27,8 @@ DEFAULT_RESULTS_DIR = Path("results")
 
 def _print_result(r: ConversationResult) -> None:
     params = " ".join(f"{k}={v}" for k, v in r.params.items())
-    print(f"\n{r.target}  scenario={r.scenario}  repeat={r.repeat}  key={r.run_key}  {params}".rstrip())
+    case = f"case={r.case}  " if r.case != r.scenario else ""
+    print(f"\n{r.target}  {case}scenario={r.scenario}  repeat={r.repeat}  key={r.run_key}  {params}".rstrip())
     # A `from` column (the parent turn) only for conversations that branch.
     branched = any(t.parent != t.turn - 1 for t in r.turns)
 
@@ -65,6 +69,7 @@ def _write_jsonl(results: list[ConversationResult], path: Path) -> None:
         for r in results:
             for t in r.turns:
                 row = {
+                    "case": r.case,
                     "scenario": r.scenario,
                     "target": r.target,
                     "run_key": r.run_key,
@@ -74,51 +79,112 @@ def _write_jsonl(results: list[ConversationResult], path: Path) -> None:
                 f.write(json.dumps(row | t.to_json(), default=str) + "\n")
 
 
+def _load_suite(args: argparse.Namespace) -> Suite:
+    """A `.toml` path is a suite; anything else is a scenario name, run as a one-case suite."""
+    if args.scenario.endswith(".toml"):
+        if args.param:
+            raise ValueError("-p doesn't apply to a suite; set parameters in the suite file so the run is reproducible")
+        return load_suite(Path(args.scenario), args.prompts_dir)
+    return single(load_scenario(args.scenario, args.prompts_dir).with_params(dict(args.param)))
+
+
+def _target_specs(args: argparse.Namespace) -> list[str]:
+    from_files = [spec for path in args.targets_file for spec in load_targets_file(path)]
+    specs = list(dict.fromkeys([*from_files, *args.target]))
+    if not specs:
+        raise ValueError("no targets: pass -t provider:model_id or -T targets.toml")
+    return specs
+
+
+def _write_manifest(run_dir: Path, suite: Suite, specs: list[str], args: argparse.Namespace, started: str) -> None:
+    """Record everything needed to rerun the suite next to its results."""
+    assert suite.source
+    run_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(suite.source, run_dir / "suite.toml")
+    manifest = {
+        "suite": str(suite.source),
+        "description": suite.description,
+        "started": started,
+        "bench_cache_version": version("bench-cache"),
+        "targets": specs,
+        "repeats": args.repeats,
+        "turn_delay_s": args.turn_delay,
+        "cases": [{"name": c.name, "scenario": c.scenario.name, "params": c.scenario.params} for c in suite.cases],
+    }
+    (run_dir / "run.json").write_text(json.dumps(manifest, indent=2, default=str) + "\n")
+
+
 async def _run(args: argparse.Namespace) -> int:
-    scenario = load_scenario(args.scenario, args.prompts_dir).with_params(dict(args.param))
     try:
-        targets = [resolve_target(spec) for spec in args.target]
+        suite = _load_suite(args)
+    except (ValueError, OSError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    try:
+        specs = _target_specs(args)
+        targets = [resolve_target(spec) for spec in specs]
         for target in targets:
             target.build()  # fail on an unknown provider or missing API key before any spend
-    except (ValueError, UserError, ImportError) as e:
+    except (ValueError, OSError, UserError, ImportError) as e:
         print(f"{e}; see `bench-cache list`", file=sys.stderr)
         return 2
 
+    started = datetime.now()
+    stamp = started.strftime("%Y%m%d-%H%M%S")
+    if suite.source is None:
+        out_paths = {suite.cases[0].name: args.out_dir / f"{stamp}_{suite.name}.jsonl"}
+    else:
+        run_dir = args.out_dir / f"{stamp}_{suite.name}"
+        _write_manifest(run_dir, suite, specs, args, started.isoformat(timespec="seconds"))
+        out_paths = {c.name: run_dir / f"{c.name}.jsonl" for c in suite.cases}
+
     results: list[ConversationResult] = []
+    written: list[Path] = []
     errors = 0
-    for target in targets:
-        for rep in range(args.repeats):
-            try:
-                r = await run_conversation(
-                    target,
-                    scenario,
-                    repeat=rep,
-                    turn_delay_s=args.turn_delay,
-                )
-            except ModelHTTPError as e:
-                print(f"\n{target.name}  repeat={rep}: HTTP {e.status_code}: {e.body}", file=sys.stderr)
-                errors += 1
-                continue
-            _print_result(r)
-            results.append(r)
+    for case in suite.cases:
+        if len(suite.cases) > 1:
+            params = " ".join(f"{k}={v}" for k, v in case.scenario.params.items())
+            print(f"\n=== case {case.name} ({case.scenario.name})  {params}")
+        case_results: list[ConversationResult] = []
+        for target in targets:
+            for rep in range(args.repeats):
+                try:
+                    r = await run_conversation(
+                        target,
+                        case.scenario,
+                        case=case.name,
+                        repeat=rep,
+                        turn_delay_s=args.turn_delay,
+                    )
+                except ModelHTTPError as e:
+                    print(f"\n{target.name}  repeat={rep}: HTTP {e.status_code}: {e.body}", file=sys.stderr)
+                    errors += 1
+                    continue
+                _print_result(r)
+                case_results.append(r)
+        if case_results:  # written per case, so a long suite keeps finished cases if it stops early
+            out = out_paths[case.name]
+            _write_jsonl(case_results, out)
+            written += [out, *render(out)]
+        results += case_results
 
     if len(results) > 1:
-        print("\nper target, all repeats:")
-        for target_name in dict.fromkeys(args.target):
-            rs = [r for r in results if r.target == target_name]
-            if rs:
-                inp, cached, cacheable = (
-                    sum(getattr(r, a) for r in rs) for a in ("input_tokens", "cache_read_tokens", "cacheable_tokens")
-                )
-                print(f"  {target_name} (n={len(rs)}): {_summary(inp, cached, cacheable)}")
+        print("\nper case and target, all repeats:" if len(suite.cases) > 1 else "\nper target, all repeats:")
+        for case in suite.cases:
+            for spec in specs:
+                rs = [r for r in results if r.case == case.name and r.target == spec]
+                if rs:
+                    inp, cached, cacheable = (
+                        sum(getattr(r, a) for r in rs)
+                        for a in ("input_tokens", "cache_read_tokens", "cacheable_tokens")
+                    )
+                    label = f"{case.name}  {spec}" if len(suite.cases) > 1 else spec
+                    print(f"  {label} (n={len(rs)}): {_summary(inp, cached, cacheable)}")
 
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = args.out_dir / f"{stamp}_{scenario.name}.jsonl"
     failed = sum(not r.passed for r in results)
     print(f"\n{len(results) - failed}/{len(results)} conversations met expectations, {errors} errored.")
-    if results:
-        _write_jsonl(results, out)
-        print("Wrote", *[out, *render(out)], sep="\n  ")
+    if written:
+        print("Wrote", *written, sep="\n  ")
     return 1 if failed or errors else 0
 
 
@@ -191,18 +257,27 @@ def main() -> None:
     h.set_defaults(func=_hosts)
 
     r = sub.add_parser("run", help="run a scenario against one or more targets")
-    r.add_argument("scenario")
+    r.add_argument("scenario", help="a scenario name, or a suite file (.toml) of cases to run")
     r.add_argument(
         "-t",
         "--target",
         action="append",
-        required=True,
+        default=[],
         help="provider:model_id; OpenRouter targets take @host[,host...] to pin upstream hosts (repeatable)",
+    )
+    r.add_argument(
+        "-T",
+        "--targets-file",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="TOML file with `targets = [...]`; combines with -t (repeatable)",
     )
     r.add_argument(
         "-p", "--param", type=_param, action="append", default=[], metavar="NAME=VALUE", help="scenario parameter"
     )
-    r.add_argument("-n", "--repeats", type=int, default=1)
+    r.add_argument("-n", "--repeats", type=int, default=1, help="conversations per case and target")
     r.add_argument("--turn-delay", type=float, default=0.0, help="seconds to wait between turns")
     r.add_argument("--out-dir", type=Path, default=DEFAULT_RESULTS_DIR)
     r.set_defaults(func=lambda a: asyncio.run(_run(a)))
