@@ -44,10 +44,6 @@ WARM = "#e34948"
 """A first turn that read cache: it can only have come from another run."""
 
 
-def _lane_color(lane: int) -> str:
-    return SERIES[lane % (len(SERIES) - 1)]  # the last series colour (red) is reserved for WARM
-
-
 def _tokens(v: float, _pos: object = None) -> str:
     return f"{v / 1000:g}k" if v >= 1000 else f"{v:g}"
 
@@ -138,13 +134,12 @@ def plot_cached(jsonl: Path, out: Path) -> Path:
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(width, 4.2 * nrows + 1.4), sharey=True, squeeze=False, facecolor=SURFACE
     )
-    layouts: dict[str, tuple[dict[int, tuple[int, int]], dict[int, int]]] = {}
+    color = SERIES[0]  # one colour for every branch; the tree's shape already tells them apart
 
     for ax, (target, trajectories) in zip(axes.flat, runs.items(), strict=False):
         ax.set_facecolor(SURFACE)
         parents = {t["turn"]: _parent(t) for turns in trajectories.values() for t in turns}
         pos = _tree_layout(parents)
-        layouts[target] = pos, parents
         xs = _run_slots(pos, len(trajectories))
         prefix: dict[int, list[int]] = defaultdict(list)
         hits = turns_judged = starts = cold = cached_total = cacheable_total = 0
@@ -153,7 +148,7 @@ def plot_cached(jsonl: Path, out: Path) -> Path:
             cached = {t["turn"]: t["cache_read_tokens"] for t in turns}
             for t in turns:
                 turn, y, p = t["turn"], t["cache_read_tokens"], _parent(t)
-                x, color = xs[turn, i], _lane_color(pos[turn][1])
+                x = xs[turn, i]
                 prefix[turn].append(t["prev_input_tokens"])
                 cached_total += y
                 cacheable_total += t["prev_input_tokens"]
@@ -225,23 +220,7 @@ def plot_cached(jsonl: Path, out: Path) -> Path:
     for ax in axes[:, 0]:
         ax.set_ylabel("cached tokens", color=TEXT_2)
 
-    # One colour per branch, labelled from the first target (every target runs the same scenario).
-    pos, parents = next(iter(layouts.values()))
-    n_lanes = 1 + max(lane for _, lane in pos.values())
-    main_label = "runs side by side, 1st leftmost"
-    if n_lanes > 1:
-        main_label = f"branch 1 ({main_label})"
-    handles = [Line2D([], [], color=_lane_color(0), lw=2, label=main_label)]
-    for lane in range(1, n_lanes):
-        first_turn = min(turn for turn, (_, turn_lane) in pos.items() if turn_lane == lane)
-        fork = parents[first_turn]
-        if fork not in pos:
-            origin = "the system prompt"
-        elif n_lanes > 2:  # say which branch it forks from; with nested branches several share a turn
-            origin = f"branch {pos[fork][1] + 1} turn {pos[fork][0]}"
-        else:
-            origin = f"turn {pos[fork][0]}"
-        handles.append(Line2D([], [], color=_lane_color(lane), lw=2, label=f"branch {lane + 1} (from {origin})"))
+    handles = [Line2D([], [], color=color, lw=2, label="runs side by side, 1st leftmost")]
     handles += [
         Line2D([], [], color=TEXT_2, marker="o", ls="", ms=6, label="hit: cached grew"),
         Line2D([], [], color=TEXT_2, marker="X", ls="", ms=9, label="miss: cached same or less"),
