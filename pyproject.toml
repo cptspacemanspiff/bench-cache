@@ -1,6 +1,6 @@
 [project]
 name = "bench-cache"
-version = "0.1.0"
+version = "0.1.1"
 description = "Benchmark effective prompt-cache rates of LLM providers across multi-turn conversations"
 readme = "README.md"
 license = "MIT"
