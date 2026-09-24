@@ -10,7 +10,8 @@ uv run bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3     
 uv run bench-cache run branch -t openai:gpt-5-mini -p trunk=2 -p branches=3,2    # ... and each C splits in 2 again
 uv run bench-cache hosts openrouter:deepseek/deepseek-v4-flash      # upstream host slugs + cache pricing
 uv run bench-cache run linear -t openrouter:deepseek/deepseek-v4-flash@streamlake -t openrouter:deepseek/deepseek-v4-flash@baidu
-uv run bench-cache run suites/basic.toml -T targets/default.toml -n 5   # a suite of cases against a list of targets
+uv run bench-cache run basic -T default -n 5                            # a built-in suite of cases against a built-in targets list
+uv run bench-cache run my-suite.toml -T my-targets.toml -n 5            # your own suite and targets files
 ```
 
 A target is `provider:model_id`. `openrouter` (Chat Completions) and `openrouter-responses` (Responses API) have their own settings in `targets.py`. Any other prefix goes to pydantic-ai's `infer_model`, so every provider pydantic-ai supports works, with that provider's usual API key variable (e.g. `OPENAI_API_KEY`). Its SDK must be installed, and only the `openai` extra is by default. Providers that cache only at explicit breakpoints (Anthropic, Bedrock) have no factory yet, so they will show no cache reads.
@@ -46,7 +47,7 @@ Both built-in scenarios send filler text under a system prompt that tells the mo
 A suite file fixes *what* runs: a list of named cases, each a scenario with its parameters. *Where* it runs and *how many times* are chosen per run, so the same suite can be rerun later, against other targets, and at a quick `-n 1` or a thorough `-n 20`.
 
 ```toml
-# suites/basic.toml
+# my-suite.toml
 description = "Linear multi-turn and branching conversations"
 
 [[case]]
@@ -75,11 +76,12 @@ sweep = { branches = [2, 4, 8] }   # one case per value: width.branches=2, ...
 - `params` override the scenario's defaults. Lists are TOML lists (`turn_tokens = [2048, 8000]`). `-p` doesn't apply to a suite, so everything that shapes the run stays in the file.
 - `sweep` expands one `[[case]]` into the cartesian product of its lists, with each combination appended to the name.
 - The whole suite is loaded and checked (scenarios exist, parameters are known, turn structure is valid) before any request is sent.
+- A suite is a `.toml` path, or the name of one that ships with the package (`bench-cache run basic`). A name is looked up as a scenario first, then as a built-in suite. `bench-cache list` shows the built-in suites and targets files and the folder they are in, so you can copy one as a starting point.
 
-Targets come from `-t` and from any number of `-T` targets files, which hold only a list:
+Targets come from `-t` and from any number of `-T` targets files, which hold only a list. Like suites, `-T` takes a `.toml` path or the name of a built-in file (`-T default`):
 
 ```toml
-# targets/default.toml
+# my-targets.toml
 targets = [
     "openrouter:deepseek/deepseek-v4-flash",
     "openrouter:deepseek/deepseek-v4-flash@streamlake",
@@ -103,7 +105,7 @@ Cases run in order, and each runs on every target `-n` times. A suite run writes
   `key` is a fresh UUID for every conversation. Put it into f-strings to choose which prefixes are new. For example, placing it at the very start of `system()` guarantees that turn 1 can't hit the cache.
 
   Keyword arguments with defaults on these functions become scenario parameters. Override them with `-p name=value`, e.g. `-p n_turns=10 -p turn_tokens=3000`. A comma-separated value becomes a list, e.g. `-p turn_tokens=2048,8000`. `bench_cache.filler.filler(n_tokens, tag=..., seed=...)` returns deterministic padding of roughly `n_tokens` tokens. It starts with `[tag]`, so a key-derived tag makes each block's start a deterministic point to break the prefix. `filler.ok_system(key)` is the "always reply OK" system prompt the built-in scenarios use, so the model's replies add almost nothing to the history.
-- `src/bench_cache/suite.py`: loads suite files (expanding sweeps and validating every case) and targets files.
+- `src/bench_cache/suite.py`: loads suite files (expanding sweeps and validating every case) and targets files. Built-in ones are `src/bench_cache/suites/*.toml` and `src/bench_cache/target_lists/*.toml`, and are found by file name.
 - `src/bench_cache/targets.py`: parses target specs and builds a pydantic-ai model and its settings. `FACTORIES` holds the providers with their own settings. `openrouter:` targets call OpenRouter's Chat Completions endpoint (`OpenRouterModel`). `openrouter-responses:` targets call its Responses endpoint (`OpenAIResponsesModel`) statelessly, re-sending the full history each turn. All other providers get the shared settings with `thinking` off.
 - `src/bench_cache/runner.py`: runs the turns in order, each continuing its parent turn's message history, and records each response's `RequestUsage`.
 - `src/bench_cache/cli.py`: the CLI, table output and JSONL writer.

@@ -19,7 +19,16 @@ from pydantic_ai.exceptions import ModelHTTPError, UserError
 from .plot import render
 from .runner import ConversationResult, run_conversation
 from .scenario import DEFAULT_PROMPTS_DIR, list_scenarios, load_scenario
-from .suite import Suite, load_suite, load_targets_file, single
+from .suite import (
+    BUILTIN_SUITES_DIR,
+    BUILTIN_TARGETS_DIR,
+    Suite,
+    list_builtin,
+    load_suite,
+    load_targets_file,
+    resolve_file,
+    single,
+)
 from .targets import FACTORIES, list_hosts, resolve_target
 
 DEFAULT_RESULTS_DIR = Path("results")
@@ -80,16 +89,25 @@ def _write_jsonl(results: list[ConversationResult], path: Path) -> None:
 
 
 def _load_suite(args: argparse.Namespace) -> Suite:
-    """A `.toml` path is a suite; anything else is a scenario name, run as a one-case suite."""
-    if args.scenario.endswith(".toml"):
-        if args.param:
-            raise ValueError("-p doesn't apply to a suite; set parameters in the suite file so the run is reproducible")
-        return load_suite(Path(args.scenario), args.prompts_dir)
-    return single(load_scenario(args.scenario, args.prompts_dir).with_params(dict(args.param)))
+    """A `.toml` path is a suite file. A bare name is a scenario, run as a one-case suite, or else a built-in suite."""
+    ref: str = args.scenario
+    if not ref.endswith(".toml"):
+        scenarios = list_scenarios(args.prompts_dir)
+        if ref in scenarios:
+            return single(load_scenario(ref, args.prompts_dir).with_params(dict(args.param)))
+        if ref not in (suites := list_builtin(BUILTIN_SUITES_DIR)):
+            raise FileNotFoundError(f"no scenario or built-in suite {ref!r} (scenarios: {scenarios}, suites: {suites})")
+    if args.param:
+        raise ValueError("-p doesn't apply to a suite; set parameters in the suite file so the run is reproducible")
+    return load_suite(resolve_file(ref, BUILTIN_SUITES_DIR, "suite"), args.prompts_dir)
 
 
 def _target_specs(args: argparse.Namespace) -> list[str]:
-    from_files = [spec for path in args.targets_file for spec in load_targets_file(path)]
+    from_files = [
+        spec
+        for ref in args.targets_file
+        for spec in load_targets_file(resolve_file(ref, BUILTIN_TARGETS_DIR, "targets file"))
+    ]
     specs = list(dict.fromkeys([*from_files, *args.target]))
     if not specs:
         raise ValueError("no targets: pass -t provider:model_id or -T targets.toml")
@@ -195,6 +213,14 @@ def _list(args: argparse.Namespace) -> int:
         print(f"  {name:<28} {scenario.description}")
         if scenario.params:
             print(f"  {'':<28} params: " + " ".join(f"{k}={v}" for k, v in scenario.params.items()))
+    print("suites (run by name, or pass a .toml path):")
+    for name in list_builtin(BUILTIN_SUITES_DIR):
+        suite = load_suite(BUILTIN_SUITES_DIR / f"{name}.toml", args.prompts_dir)
+        print(f"  {name:<28} {suite.description}")
+    print("targets files (-T by name, or pass a .toml path):")
+    for name in list_builtin(BUILTIN_TARGETS_DIR):
+        print(f"  {name:<28} " + " ".join(load_targets_file(BUILTIN_TARGETS_DIR / f"{name}.toml")))
+    print(f"built-in files are in {BUILTIN_SUITES_DIR.parent}; copy one to start your own\n")
     print("targets: provider:model_id")
     for name, f in FACTORIES.items():
         hosts = "[@host,...]" if f.pins_hosts else ""
@@ -257,7 +283,7 @@ def main() -> None:
     h.set_defaults(func=_hosts)
 
     r = sub.add_parser("run", help="run a scenario against one or more targets")
-    r.add_argument("scenario", help="a scenario name, or a suite file (.toml) of cases to run")
+    r.add_argument("scenario", help="a scenario or built-in suite name, or a suite file (.toml) of cases to run")
     r.add_argument(
         "-t",
         "--target",
@@ -268,11 +294,10 @@ def main() -> None:
     r.add_argument(
         "-T",
         "--targets-file",
-        type=Path,
         action="append",
         default=[],
         metavar="FILE",
-        help="TOML file with `targets = [...]`; combines with -t (repeatable)",
+        help="TOML file with `targets = [...]`, or a built-in one by name; combines with -t (repeatable)",
     )
     r.add_argument(
         "-p", "--param", type=_param, action="append", default=[], metavar="NAME=VALUE", help="scenario parameter"

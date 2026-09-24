@@ -31,6 +31,9 @@ silently change what an old run meant.
 A targets file lists target specs, one per string:
 
     targets = ["openai:gpt-5-mini", "openrouter:deepseek/deepseek-v4-flash@streamlake"]
+
+Both kinds of file can also ship with the package, in `suites/` and
+`target_lists/`, and are then referred to by bare name instead of a path.
 """
 
 from __future__ import annotations
@@ -43,6 +46,9 @@ from pathlib import Path
 from typing import Any
 
 from .scenario import DEFAULT_PROMPTS_DIR, Scenario, load_scenario
+
+BUILTIN_SUITES_DIR = Path(__file__).parent / "suites"
+BUILTIN_TARGETS_DIR = Path(__file__).parent / "target_lists"
 
 _CASE_KEYS = {"name", "scenario", "params", "sweep"}
 _SAFE_NAME = re.compile(r"^[\w.=,+-]+$")
@@ -62,6 +68,20 @@ class Suite:
     cases: list[Case]
     source: Path | None = None
     """The TOML file the suite came from; None for a single scenario run from the CLI."""
+
+
+def list_builtin(builtin_dir: Path) -> list[str]:
+    return sorted(p.stem for p in builtin_dir.glob("*.toml"))
+
+
+def resolve_file(ref: str, builtin_dir: Path, kind: str) -> Path:
+    """A ref ending in `.toml` is a path; a bare name is a file shipped in `builtin_dir`."""
+    if ref.endswith(".toml"):
+        return Path(ref)
+    path = builtin_dir / f"{ref}.toml"
+    if not path.is_file():
+        raise FileNotFoundError(f"no built-in {kind} {ref!r} (have: {list_builtin(builtin_dir)})")
+    return path
 
 
 def single(scenario: Scenario) -> Suite:

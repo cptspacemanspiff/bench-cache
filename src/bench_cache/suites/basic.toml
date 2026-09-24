@@ -1,6 +1,6 @@
 # A reproducible workload: which conversations to run, with every parameter fixed.
 # Targets and repeats are chosen per run, e.g.
-#   uv run bench-cache run suites/basic.toml -T targets/default.toml -n 5
+#   bench-cache run basic -T default -n 5
 
 description = "Linear multi-turn and branching conversations"
 
