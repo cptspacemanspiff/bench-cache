@@ -2,8 +2,8 @@
 
 `<stem>_cached.png`: cached tokens per turn, one panel per target, one line per
 conversation (trajectory), with hit/miss markers.
-`<stem>_hits.png`: the same hits as a binary grid, one row per conversation and
-one column per turn.
+`<stem>_hits.png`: the same hits as a grid, one row per target and one box per
+turn, each box filled to the share of conversations that hit on that turn.
 
 A hit means the cache grew relative to the previous turn (see `cache_grew`).
 Hits are recomputed from the cached-token sequence, so older result files plot
@@ -190,116 +190,83 @@ MISS = GRID
 
 
 def plot_hits(jsonl: Path, out: Path) -> Path:
-    """Binary grid: one row per conversation, one column per turn; filled = cache grew."""
+    """One row per target, one box per turn; each box is filled to the share of runs that hit."""
     first, runs = _load(jsonl)
     n_turns = max(len(turns) for trajectories in runs.values() for turns in trajectories.values())
-    n_rows = sum(len(trajectories) for trajectories in runs.values())
+    n_targets = len(runs)
+    pitch = 1.45  # row spacing in cell units: box + per-turn label below it
 
     cell = 0.42  # inches per cell
-    panel_pad = 0.95  # title + subtitle + turn labels above each panel
-    width = max(1.6 + cell * n_turns + 0.9, 8.5)
-    height = 0.75 + len(runs) * panel_pad + cell * n_rows + 0.3 * len(runs) + 0.6
     plt.rcParams.update({"font.size": 10, "axes.titlesize": 11, "text.color": TEXT})
-    fig, axes = plt.subplots(
-        len(runs),
-        1,
-        figsize=(width, height),
-        squeeze=False,
-        facecolor=SURFACE,
-        gridspec_kw={"height_ratios": [len(t) + 0.8 for t in runs.values()]},
-    )
+    fig, ax = plt.subplots(facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
 
-    for ax, (target, trajectories) in zip(axes[:, 0], runs.items(), strict=True):
-        ax.set_facecolor(SURFACE)
-        n = len(trajectories)
+    for row, trajectories in enumerate(runs.values()):
+        y = row * pitch
         hits_per_turn = [0] * (n_turns + 1)
         judged_per_turn = [0] * (n_turns + 1)
-        total_hits = total_judged = 0
-
-        for row, turns in enumerate(trajectories.values()):
+        for turns in trajectories.values():
             cached = [t["cache_read_tokens"] for t in turns]
-            row_hits = 0
-            for j, t in enumerate(turns):
-                x, y = t["turn"], row
-                corner = (x - 0.44, y - 0.42)
-                if j == 0:
-                    # turn 1 has no previous turn: outline only
-                    ax.add_patch(Rectangle(corner, 0.88, 0.84, fill=False, ec=GRID, lw=1))
-                    continue
-                hit = cache_grew(cached[j], cached[j - 1])
-                row_hits += hit
-                hits_per_turn[x] += hit
-                judged_per_turn[x] += 1
-                ax.add_patch(Rectangle(corner, 0.88, 0.84, fc=HIT if hit else MISS, ec="none"))
-                if not hit:
-                    ax.plot(x, y, marker="X", ms=7, color=TEXT_2, mec=MISS, mew=1)
-            total_hits += row_hits
-            total_judged += len(turns) - 1
-            ax.text(n_turns + 0.7, row, f"{row_hits}/{len(turns) - 1}", va="center", color=TEXT_2, fontsize=9)
+            for j, t in enumerate(turns[1:], start=1):
+                hits_per_turn[t["turn"]] += cache_grew(cached[j], cached[j - 1])
+                judged_per_turn[t["turn"]] += 1
 
-        if n > 1:
-            for x in range(2, n_turns + 1):
-                if judged_per_turn[x]:
-                    ax.text(
-                        x,
-                        n - 0.2,
-                        f"{hits_per_turn[x]}/{judged_per_turn[x]}",
-                        ha="center",
-                        va="top",
-                        color=TEXT_2,
-                        fontsize=8,
-                    )
+        for x in range(1, n_turns + 1):
+            left, bottom = x - 0.44, y + 0.42  # y axis is inverted: bottom edge is y + 0.42
+            judged = judged_per_turn[x]
+            if not judged:
+                # turn 1 has no previous turn to compare against
+                ax.add_patch(Rectangle((left, y - 0.42), 0.88, 0.84, fill=False, ec=GRID, lw=1))
+                continue
+            share = hits_per_turn[x] / judged
+            ax.add_patch(Rectangle((left, y - 0.42), 0.88, 0.84, fc=MISS, ec="none"))
+            ax.add_patch(Rectangle((left, bottom), 0.88, -0.84 * share, fc=HIT, ec="none"))
+            ax.text(x, y + 0.5, f"{hits_per_turn[x]}/{judged}", ha="center", va="top", color=TEXT_2, fontsize=8)
 
-        ax.set_xlim(0.5, n_turns + 0.5)
-        ax.set_ylim(n - 0.5 + (0.6 if n > 1 else 0), -0.5)
-        ax.set_aspect("equal")
-        ax.set_yticks(range(n), [f"run {i + 1}" for i in range(n)])
-        ax.set_xticks(range(1, n_turns + 1))
-        ax.xaxis.tick_top()
-        ax.tick_params(colors=TEXT_2, length=0)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        # Stack above the top tick labels (turn numbers, ~18pt tall): subtitle, then title.
-        ax.set_title(target, loc="left", fontweight="bold", color=TEXT, pad=36)
-        ax.annotate(
-            f"{total_hits}/{total_judged} turns grew the cache",
-            (0, 1),
-            xycoords="axes fraction",
-            xytext=(0, 20),
-            textcoords="offset points",
-            color=TEXT_2,
-            fontsize=9,
-            va="bottom",
-        )
-        ax.annotate(
-            "turn",
-            (1, 1),
-            xycoords="axes fraction",
-            xytext=(6, 4),
-            textcoords="offset points",
-            color=TEXT_2,
-            fontsize=9,
-            va="bottom",
-        )
+        total_hits, total_judged = sum(hits_per_turn), sum(judged_per_turn)
+        ax.text(n_turns + 0.7, y, f"{total_hits}/{total_judged}", va="center", color=TEXT_2, fontsize=9)
 
+    ax.set_xlim(0.5, n_turns + 0.5)
+    ax.set_ylim((n_targets - 1) * pitch + 0.9, -0.5)
+    ax.set_yticks([i * pitch for i in range(n_targets)], list(runs), fontweight="bold")
+    ax.set_xticks(range(1, n_turns + 1))
+    ax.xaxis.tick_top()
+    ax.tick_params(length=0, labelcolor=TEXT_2)
+    ax.tick_params(axis="y", labelcolor=TEXT)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    # Lay out in inches so a box is `cell` square whatever the target names' length.
+    renderer = fig.canvas.get_renderer()  # type: ignore[attr-defined]
+    label_w = max(t.get_window_extent(renderer).width for t in ax.get_yticklabels()) / fig.dpi + 0.25
+    axes_w, axes_h = cell * n_turns, cell * ((n_targets - 1) * pitch + 1.4)
+    top, bottom, right = 1.05, 0.6, 0.9  # header + turn numbers; legend; per-target totals
+    width = max(label_w + axes_w + right, 8.5)
+    height = top + axes_h + bottom
+    fig.set_size_inches(width, height)
+    fig.subplots_adjust(
+        left=label_w / width, right=(label_w + axes_w) / width, top=1 - top / height, bottom=bottom / height
+    )
+    ax.annotate(
+        "turn",
+        (1, 1),
+        xycoords="axes fraction",
+        xytext=(6, 4),
+        textcoords="offset points",
+        color=TEXT_2,
+        fontsize=9,
+        va="bottom",
+    )
+
+    n_runs = sorted({len(t) for t in runs.values()})
+    runs_label = f"{n_runs[0]}" if len(n_runs) == 1 else f"{n_runs[0]}-{n_runs[-1]}"
     handles = [
-        Patch(fc=HIT, label="cache grew (hit)"),
-        Line2D(
-            [],
-            [],
-            color=TEXT_2,
-            marker="X",
-            ls="",
-            ms=7,
-            mfc=TEXT_2,
-            markeredgecolor=MISS,
-            label="cache same or dropped (miss)",
-        ),
+        Patch(fc=HIT, label="runs where the cache grew (hit)"),
+        Patch(fc=MISS, label="runs where it stayed or dropped (miss)"),
         Patch(fill=False, ec=GRID, label="turn 1 (nothing to compare)"),
     ]
-    _header(fig, "Cache hit per turn", first)
+    _header(fig, f"Cache hit rate per turn across {runs_label} runs", first)
     fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False, fontsize=9)
-    fig.tight_layout(rect=(0, 0.45 / height, 1, 1 - 0.65 / height))
     fig.savefig(out, dpi=150, facecolor=SURFACE)
     plt.close(fig)
     return out

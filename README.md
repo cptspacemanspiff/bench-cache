@@ -18,7 +18,7 @@ Each run prints a per-turn table and writes three files to `./results` (change w
 
 - `<run>.jsonl`: every turn of every conversation
 - `<run>_cached.png`: cached tokens per turn, one panel per target and one line per conversation, with each turn marked hit or miss. The dashed line is the most each turn could have reused (the previous turn's input).
-- `<run>_hits.png`: the same hits as a grid, one row per conversation and one column per turn. A filled cell means the cache grew. Totals are shown per conversation (right) and per turn across conversations (below).
+- `<run>_hits.png`: the same hits as a grid, one row per target and one box per turn. Each box fills from the bottom by the share of conversations whose cache grew on that turn, with the count below it (e.g. `1/2`) and the target's total on the right.
 
 ## Layout
 
