@@ -18,8 +18,8 @@ Parameters:
     seed          filler word sequence
 """
 
-from bench_cache.filler import filler
-from bench_cache.scenario import Turn
+from .filler import filler
+from .scenario import Turn
 
 
 def system(key: str) -> str:

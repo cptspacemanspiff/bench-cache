@@ -19,7 +19,7 @@ Needs `OPENROUTER_API_KEY`. Each run prints a per-turn table and writes three fi
 
 ## Layout
 
-- `prompts/`: scenarios, one plain Python module each, kept separate from the code. A module defines:
+- Scenarios: built-in ones are modules in the package, registered in `BUILTIN_SCENARIOS` in `scenario.py`, e.g. `src/bench_cache/ok_filler.py`. Hand-written prompt sequences go in `prompts/`, outside the code, one Python file per scenario (create the folder when you add the first one). If both have a scenario with the same name, the `prompts/` file wins. Either kind defines:
   - `system(key, ...) -> str`
   - `turns(key, ...) -> list[Turn]`, where `Turn(prompt, expect="miss" | "hit" | "any")` comes from `bench_cache.scenario`
 

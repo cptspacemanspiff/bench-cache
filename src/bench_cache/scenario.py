@@ -1,4 +1,5 @@
-"""Load prompt-sequence scenarios from plain Python modules in the prompts folder.
+"""Load prompt-sequence scenarios: built-in modules in this package, or plain
+Python files in the prompts folder.
 
 A scenario module defines two functions, both taking the run key first:
 
@@ -66,29 +67,39 @@ class Scenario:
         return dataclasses.replace(self, params=self.params | overrides)
 
 
+# Scenarios generated in code ship with the package; hand-written prompt
+# sequences live as files in the prompts folder (which wins on a name clash).
+BUILTIN_SCENARIOS = {"ok_filler": "bench_cache.ok_filler"}
+
+
 def list_scenarios(prompts_dir: Path = DEFAULT_PROMPTS_DIR) -> list[str]:
-    return sorted(p.stem for p in prompts_dir.glob("*.py") if not p.stem.startswith("_"))
+    files = {p.stem for p in prompts_dir.glob("*.py") if not p.stem.startswith("_")}
+    return sorted(files | set(BUILTIN_SCENARIOS))
 
 
 def load_scenario(name: str, prompts_dir: Path = DEFAULT_PROMPTS_DIR) -> Scenario:
     path = prompts_dir / f"{name}.py"
-    if not path.is_file():
-        raise FileNotFoundError(f"no scenario {name!r} in {prompts_dir} (have: {list_scenarios(prompts_dir)})")
-
-    spec = importlib.util.spec_from_file_location(f"bench_cache_prompts.{name}", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    if path.is_file():
+        spec = importlib.util.spec_from_file_location(f"bench_cache_prompts.{name}", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        origin = str(path)
+    elif name in BUILTIN_SCENARIOS:
+        module = importlib.import_module(BUILTIN_SCENARIOS[name])
+        origin = BUILTIN_SCENARIOS[name]
+    else:
+        raise FileNotFoundError(f"no scenario {name!r} (have: {list_scenarios(prompts_dir)})")
 
     for attr in ("system", "turns"):
         if not callable(getattr(module, attr, None)):
-            raise ValueError(f"{path}: scenario must define a `{attr}(key, ...)` function")
+            raise ValueError(f"{origin}: scenario must define a `{attr}(key, ...)` function")
 
     params: dict[str, Any] = {}
     for fn in (module.system, module.turns):
         for k, v in _param_defaults(fn).items():
             if k in params and params[k] != v:
-                raise ValueError(f"{path}: parameter {k!r} has conflicting defaults {params[k]!r} and {v!r}")
+                raise ValueError(f"{origin}: parameter {k!r} has conflicting defaults {params[k]!r} and {v!r}")
             params[k] = v
 
     return Scenario(
