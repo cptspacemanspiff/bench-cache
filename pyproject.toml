@@ -1,0 +1,20 @@
+[project]
+name = "bench-cache"
+version = "0.1.0"
+description = "Benchmark effective prompt-cache rates of LLM providers across multi-turn conversations"
+readme = "README.md"
+authors = [
+    { name = "Nicholas Long", email = "19273992+cptspacemanspiff@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "pydantic-ai-slim[openai]>=2.49.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+bench-cache = "bench_cache.cli:main"
