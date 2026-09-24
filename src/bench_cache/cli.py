@@ -25,9 +25,15 @@ DEFAULT_RESULTS_DIR = Path("results")
 def _print_result(r: ConversationResult) -> None:
     params = " ".join(f"{k}={v}" for k, v in r.params.items())
     print(f"\n{r.target}  scenario={r.scenario}  repeat={r.repeat}  key={r.run_key}  {params}".rstrip())
+    # A `from` column (the parent turn) only for conversations that branch.
+    branched = any(t.parent != t.turn - 1 for t in r.turns)
+
+    def parent_col(v: object) -> str:
+        return f"{v!s:>4} " if branched else ""
+
     header = (
-        f"{'turn':>4} {'expect':>6} {'input':>7} {'cached':>7} {'write':>6} {'output':>6} {'hit%':>6} "
-        f"{'reuse%':>7} {'lat s':>6} {'cost $':>10} {'upstream':<12} verdict"
+        f"{'turn':>4} {parent_col('from')}{'expect':>6} {'input':>7} {'cached':>7} {'write':>6} {'output':>6} "
+        f"{'hit%':>6} {'reuse%':>7} {'lat s':>6} {'cost $':>10} {'upstream':<12} verdict"
     )
     print(header)
     print("-" * len(header))
@@ -36,8 +42,9 @@ def _print_result(r: ConversationResult) -> None:
         cost_s = f"{t.cost_usd:10.6f}" if t.cost_usd is not None else f"{'-':>10}"
         upstream = t.upstream or "-"
         print(
-            f"{t.turn:>4} {t.expect:>6} {t.input_tokens:>7} {t.cache_read_tokens:>7} {t.cache_write_tokens:>6} "
-            f"{t.output_tokens:>6} {t.hit_rate:6.1%} {reuse} {t.latency_s:6.2f} {cost_s} {upstream:<12} {t.verdict}"
+            f"{t.turn:>4} {parent_col(t.parent)}{t.expect:>6} {t.input_tokens:>7} {t.cache_read_tokens:>7} "
+            f"{t.cache_write_tokens:>6} {t.output_tokens:>6} {t.hit_rate:6.1%} {reuse} {t.latency_s:6.2f} "
+            f"{cost_s} {upstream:<12} {t.verdict}"
         )
     print("-" * len(header))
     print(_summary(r.input_tokens, r.cache_read_tokens, r.cacheable_tokens))

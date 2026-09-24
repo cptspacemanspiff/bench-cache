@@ -31,6 +31,10 @@ DEFAULT_PROMPTS_DIR = Path("prompts")
 class Turn:
     prompt: str
     expect: Expectation = "any"
+    parent: int | None = None
+    """The turn (1-based) whose history this turn continues: None for the previous
+    turn, an earlier turn to branch the conversation there, or 0 for just the
+    system prompt."""
 
 
 def _param_defaults(fn: PromptFn) -> dict[str, Any]:
@@ -59,6 +63,9 @@ class Scenario:
             raise ValueError(f"scenario {self.name!r} produced no turns with {self.params}")
         if bad := {t.expect for t in turns} - {"miss", "hit", "any"}:
             raise ValueError(f"scenario {self.name!r}: unknown expectations {bad}")
+        for i, t in enumerate(turns, start=1):
+            if t.parent is not None and not 0 <= t.parent < i:
+                raise ValueError(f"scenario {self.name!r}: turn {i} has parent {t.parent}, not an earlier turn")
         return system, turns
 
     def with_params(self, overrides: dict[str, Any]) -> Scenario:
@@ -69,7 +76,7 @@ class Scenario:
 
 # Scenarios generated in code ship with the package; hand-written prompt
 # sequences live as files in the prompts folder (which wins on a name clash).
-BUILTIN_SCENARIOS = {"ok_filler": "bench_cache.ok_filler"}
+BUILTIN_SCENARIOS = {"ok_filler": "bench_cache.ok_filler", "branch": "bench_cache.branch"}
 
 
 def list_scenarios(prompts_dir: Path = DEFAULT_PROMPTS_DIR) -> list[str]:

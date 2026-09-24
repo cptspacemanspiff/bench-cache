@@ -16,9 +16,9 @@ from .targets import Target
 
 
 def cache_grew(cached: int, prev_cached: int) -> bool:
-    """A turn is a cache hit when it read more from cache than the previous turn did.
+    """A turn is a cache hit when it read more from cache than its parent turn did.
 
-    The history only grows, so a working prefix cache reads strictly more each turn.
+    Each turn extends its parent's history, so a working prefix cache reads strictly more.
     Reading the same amount or less (e.g. 500 -> 1000 -> 500) means part of the
     cached prefix was lost, and counts as a miss.
     """
@@ -49,9 +49,11 @@ class TurnStats:
     cache_write_tokens: int
     output_tokens: int
     prev_input_tokens: int
-    """Input tokens of the previous turn: the prefix this turn could have reused."""
+    """Input tokens of the parent turn: the prefix this turn could have reused."""
     prev_cache_read_tokens: int
     latency_s: float
+    parent: int = 0
+    """The turn whose history this turn continued (turn - 1 unless the scenario branches)."""
     verdict: str = ""
     cost_usd: float | None = None
     """Billed cost when the provider reports it, else estimated from genai-prices, else None."""
@@ -106,7 +108,7 @@ class ConversationResult:
 
     @property
     def cacheable_tokens(self) -> int:
-        """Upper bound on cache reads: each turn could reuse at most the previous turn's input."""
+        """Upper bound on cache reads: each turn could reuse at most its parent turn's input."""
         return sum(t.prev_input_tokens for t in self.turns)
 
 
@@ -122,17 +124,20 @@ async def run_conversation(
     model, settings = target.build()
     agent = Agent(model, instructions=system, model_settings=settings)
 
-    history: list[ModelMessage] = []
+    histories: list[list[ModelMessage]] = [[]]  # history after each turn; index 0 is before turn 1
     turns: list[TurnStats] = []
-    prev_input = prev_cached = 0
     for i, turn in enumerate(scenario_turns, start=1):
         if i > 1 and turn_delay_s:
             await asyncio.sleep(turn_delay_s)
 
+        parent = i - 1 if turn.parent is None else turn.parent
+        prev_input, prev_cached = (
+            (turns[parent - 1].input_tokens, turns[parent - 1].cache_read_tokens) if parent else (0, 0)
+        )
         t0 = time.perf_counter()
-        result = await agent.run(turn.prompt, message_history=history)
+        result = await agent.run(turn.prompt, message_history=histories[parent])
         latency = time.perf_counter() - t0
-        history = result.all_messages()
+        histories.append(result.all_messages())
 
         response = result.response
         u = response.usage
@@ -146,6 +151,7 @@ async def run_conversation(
             prev_input_tokens=prev_input,
             prev_cache_read_tokens=prev_cached,
             latency_s=latency,
+            parent=parent,
             cost_usd=_cost_usd(response),
             upstream=_upstream(response),
             model_name=response.model_name,
@@ -155,7 +161,6 @@ async def run_conversation(
         )
         stats.verdict = stats.judge()
         turns.append(stats)
-        prev_input, prev_cached = u.input_tokens, u.cache_read_tokens
 
     return ConversationResult(
         scenario=scenario.name,

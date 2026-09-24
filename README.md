@@ -6,6 +6,7 @@ Benchmarks how well LLM providers reuse cached prompts across multi-turn convers
 uv run bench-cache list
 uv run bench-cache run ok_filler -t openrouter-responses:deepseek/deepseek-v4-flash -p n_turns=10 -p turn_tokens=3000
 uv run bench-cache run ok_filler -t openai:gpt-5-mini -t google:gemini-2.5-flash
+uv run bench-cache run branch -t openai:gpt-5-mini -p n_branches=3   # A -> B -> C, B -> D, B -> E
 uv run bench-cache hosts openrouter:deepseek/deepseek-v4-flash      # upstream host slugs + cache pricing
 uv run bench-cache run ok_filler -t openrouter:deepseek/deepseek-v4-flash@streamlake -t openrouter:deepseek/deepseek-v4-flash@baidu
 ```
@@ -17,20 +18,22 @@ Without a suffix, OpenRouter picks the upstream host. Each host has its own cach
 Each run prints a per-turn table and writes three files to `./results` (change with `--out-dir`), all named after the run:
 
 - `<run>.jsonl`: every turn of every conversation
-- `<run>_cached.png`: cached tokens per turn, one panel per target and one line per conversation, with each turn marked hit or miss. The dashed line is the most each turn could have reused (the previous turn's input).
-- `<run>_hits.png`: the same hits as a grid, one row per target and one box per turn. Each box fills from the bottom by the share of conversations whose cache grew on that turn, with the count below it (e.g. `1/2`) and the target's total on the right.
+- `<run>_cached.png`: cached tokens per turn, one panel per target. Each conversation is one line, and in each turn's column the runs sit side by side (run 1 leftmost), so every run's hit or miss stays visible. Each run's first turn is marked hollow if it read nothing from cache. A red diamond means it read cache that could only have come from another run. The dashed line is the most each turn could have reused (its parent turn's input). A branching scenario is drawn as a tree: branches at the same depth share a column, each in its own colour, fanning out from the turn they branched from.
+- `<run>_hits.png`: the same hits as a grid, one row per target and one box per turn. Each box fills from the bottom by the share of conversations whose cache grew on that turn, with the count below it (e.g. `1/2`) and the target's total on the right. In a branching scenario the boxes are laid out as a tree: each branch gets its own row under its trunk, with a connector down from the turn it branched from.
 
 ## Layout
 
 - Scenarios: built-in ones are modules in the package, registered in `BUILTIN_SCENARIOS` in `scenario.py`, e.g. `src/bench_cache/ok_filler.py`. Hand-written prompt sequences go in `./prompts` (change with `--prompts-dir`), outside the code, one Python file per scenario (create the folder when you add the first one). If both have a scenario with the same name, the `prompts/` file wins. Either kind defines:
   - `system(key, ...) -> str`
-  - `turns(key, ...) -> list[Turn]`, where `Turn(prompt, expect="miss" | "hit" | "any")` comes from `bench_cache.scenario`
+  - `turns(key, ...) -> list[Turn]`, where `Turn(prompt, expect="miss" | "hit" | "any", parent=None)` comes from `bench_cache.scenario`
+
+  A turn continues from the previous turn's history by default. Set `parent` to an earlier turn's number to branch the conversation there instead (`0` starts again from just the system prompt). `branch` uses this to run A -> B -> C and then B -> D.
 
   `key` is a fresh UUID for every conversation. Put it into f-strings to choose which prefixes are new. For example, placing it at the very start of `system()` guarantees that turn 1 can't hit the cache.
 
-  Keyword arguments with defaults on these functions become scenario parameters. Override them with `-p name=value`, e.g. `-p n_turns=10 -p turn_tokens=3000`. A comma-separated value becomes a list, e.g. `-p turn_tokens=2048,8000`. `bench_cache.filler.filler(n_tokens, tag=..., seed=...)` returns deterministic padding of roughly `n_tokens` tokens. It starts with `[tag]`, so a key-derived tag makes each block's start a deterministic point to break the prefix. `ok_filler` uses it with an "always reply OK" system prompt, so the model's replies add almost nothing to the history.
+  Keyword arguments with defaults on these functions become scenario parameters. Override them with `-p name=value`, e.g. `-p n_turns=10 -p turn_tokens=3000`. A comma-separated value becomes a list, e.g. `-p turn_tokens=2048,8000`. `bench_cache.filler.filler(n_tokens, tag=..., seed=...)` returns deterministic padding of roughly `n_tokens` tokens. It starts with `[tag]`, so a key-derived tag makes each block's start a deterministic point to break the prefix. `ok_filler` uses it with an "always reply OK" system prompt, so the model's replies add almost nothing to the history. `branch` uses the same system prompt and gives branches at the same depth identical filler with different tags, so they share a prefix exactly up to the fork.
 - `src/bench_cache/targets.py`: parses target specs and builds a pydantic-ai model and its settings. `FACTORIES` holds the providers with their own settings. `openrouter:` targets call OpenRouter's Chat Completions endpoint (`OpenRouterModel`). `openrouter-responses:` targets call its Responses endpoint (`OpenAIResponsesModel`) statelessly, re-sending the full history each turn. All other providers get the shared settings with `thinking` off.
-- `src/bench_cache/runner.py`: runs the turns in order, carrying the message history forward, and records each response's `RequestUsage`.
+- `src/bench_cache/runner.py`: runs the turns in order, each continuing its parent turn's message history, and records each response's `RequestUsage`.
 - `src/bench_cache/cli.py`: the CLI, table output and JSONL writer.
 - `src/bench_cache/plot.py`: renders a results JSONL file as both PNGs. It works out hits from the cached-token counts, so older result files chart correctly too.
 
@@ -44,11 +47,12 @@ Each run prints a per-turn table and writes three files to `./results` (change w
 | hit%    | cached / input                                                            |
 | cost $  | billed cost if the provider reports it (OpenRouter Chat Completions), otherwise estimated from [genai-prices](https://github.com/pydantic/genai-prices), `-` if the model is unknown |
 | upstream | the host that served the request, where the router reports it (OpenRouter Chat Completions only) |
-| reuse%  | cached / the previous turn's input, i.e. how much of the reusable prefix was reused |
+| from    | the turn this one continued from; shown only when the conversation branches |
+| reuse%  | cached / the previous (parent) turn's input, i.e. how much of the reusable prefix was reused |
 
 Each conversation ends with a summary: the effective hit rate (all cached / all input) and the share of reusable prefix tokens that were actually reused. When there is more than one run, the same summary is also printed per target across all repeats.
 
-A `hit` turn passes only if it read more from cache than the previous turn. The history only grows, so a working cache reads more every turn. Reading the same or less, e.g. 500 → 1000 → 500, means part of the cached prefix was lost, so that turn (turn 3 here) is a miss.
+A `hit` turn passes only if it read more from cache than the previous turn (its parent, when the conversation branches). The history only grows, so a working cache reads more every turn. Reading the same or less, e.g. 500 → 1000 → 500, means part of the cached prefix was lost, so that turn (turn 3 here) is a miss.
 
 ## Development
 
