@@ -17,17 +17,19 @@ import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
-from matplotlib.patches import Patch, Rectangle  # noqa: E402
-from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
-from .runner import cache_grew  # noqa: E402
+from .runner import cache_grew
 
 # Validated categorical order (light surface); runs beyond 8 fold into neutral gray.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -42,11 +44,14 @@ def _tokens(v: float, _pos: object = None) -> str:
     return f"{v / 1000:g}k" if v >= 1000 else f"{v:g}"
 
 
-Runs = dict[str, dict[str, list[dict]]]
+Row = dict[str, Any]
+"""One turn as written to the results JSONL."""
+
+Runs = dict[str, dict[str, list[Row]]]
 """target -> run_key -> turns (sorted), in the order the runs happened."""
 
 
-def _load(jsonl: Path) -> tuple[dict, Runs]:
+def _load(jsonl: Path) -> tuple[Row, Runs]:
     rows = [json.loads(line) for line in jsonl.read_text().splitlines() if line.strip()]
     if not rows:
         raise ValueError(f"{jsonl} has no rows")
@@ -59,7 +64,7 @@ def _load(jsonl: Path) -> tuple[dict, Runs]:
     return rows[0], runs
 
 
-def _header(fig: plt.Figure, title: str, first: dict) -> None:
+def _header(fig: Figure, title: str, first: Row) -> None:
     height = fig.get_figheight()
     params = " ".join(f"{k}={v}" for k, v in (first.get("params") or {}).items())
     fig.text(0.01, 1 - 0.15 / height, f"{title}: {first['scenario']}", fontweight="bold", va="top")
@@ -216,16 +221,16 @@ def plot_hits(jsonl: Path, out: Path) -> Path:
             row_hits = 0
             for j, t in enumerate(turns):
                 x, y = t["turn"], row
-                box = dict(xy=(x - 0.44, y - 0.42), width=0.88, height=0.84)
+                corner = (x - 0.44, y - 0.42)
                 if j == 0:
                     # turn 1 has no previous turn: outline only
-                    ax.add_patch(Rectangle(**box, fill=False, ec=GRID, lw=1))
+                    ax.add_patch(Rectangle(corner, 0.88, 0.84, fill=False, ec=GRID, lw=1))
                     continue
                 hit = cache_grew(cached[j], cached[j - 1])
                 row_hits += hit
                 hits_per_turn[x] += hit
                 judged_per_turn[x] += 1
-                ax.add_patch(Rectangle(**box, fc=HIT if hit else MISS, ec="none"))
+                ax.add_patch(Rectangle(corner, 0.88, 0.84, fc=HIT if hit else MISS, ec="none"))
                 if not hit:
                     ax.plot(x, y, marker="X", ms=7, color=TEXT_2, mec=MISS, mew=1)
             total_hits += row_hits

@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessage, ModelResponse
 
 from .scenario import Expectation, Scenario
 from .targets import Target
@@ -24,6 +25,21 @@ def cache_grew(cached: int, prev_cached: int) -> bool:
     return cached > prev_cached
 
 
+def _cost_usd(response: ModelResponse) -> float | None:
+    reported = (response.provider_details or {}).get("cost")  # OpenRouter reports the billed cost
+    if isinstance(reported, int | float):
+        return float(reported)
+    try:
+        return float(response.cost().total_price)
+    except (LookupError, AssertionError):  # model unknown to genai-prices, or no model name
+        return None
+
+
+def _upstream(response: ModelResponse) -> str | None:
+    host = (response.provider_details or {}).get("downstream_provider")  # OpenRouter
+    return str(host) if host else None
+
+
 @dataclass
 class TurnStats:
     turn: int
@@ -37,6 +53,10 @@ class TurnStats:
     prev_cache_read_tokens: int
     latency_s: float
     verdict: str = ""
+    cost_usd: float | None = None
+    """Billed cost when the provider reports it, else estimated from genai-prices, else None."""
+    upstream: str | None = None
+    """The host that served the request, for routers that report it (OpenRouter)."""
     model_name: str | None = None
     response_id: str | None = None
     provider_details: dict[str, Any] = field(default_factory=dict)
@@ -102,7 +122,7 @@ async def run_conversation(
     model, settings = target.build()
     agent = Agent(model, instructions=system, model_settings=settings)
 
-    history = []
+    history: list[ModelMessage] = []
     turns: list[TurnStats] = []
     prev_input = prev_cached = 0
     for i, turn in enumerate(scenario_turns, start=1):
@@ -126,6 +146,8 @@ async def run_conversation(
             prev_input_tokens=prev_input,
             prev_cache_read_tokens=prev_cached,
             latency_s=latency,
+            cost_usd=_cost_usd(response),
+            upstream=_upstream(response),
             model_name=response.model_name,
             response_id=response.provider_response_id,
             provider_details=response.provider_details or {},

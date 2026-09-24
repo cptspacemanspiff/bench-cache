@@ -31,7 +31,7 @@ activity star table need court oil situation cost industry figure street image
 phone data picture practice piece land product doctor wall patient worker news
 test movie north love support technology step baby computer type attention film
 tree source organization hair window evidence population green blue red
-""".split()
+""".split()  # noqa: SIM905 -- a word block reads better than a 200-item list literal
 
 
 def filler(n_tokens: int, *, tag: str = "", seed: int = 0) -> str:

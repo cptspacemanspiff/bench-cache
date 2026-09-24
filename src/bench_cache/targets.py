@@ -1,24 +1,26 @@
-"""Registry of provider/model targets to benchmark.
+"""Resolve target specs into pydantic-ai models.
 
-Each target builds a pydantic-ai model plus the settings sent with every request.
-Add new providers here; the runner only depends on `Target.build()`.
+A target spec is `provider:model_id`, e.g. `openai:gpt-5-mini` or
+`google:gemini-2.5-flash`. Providers with a factory in `FACTORIES` get
+settings tuned for measuring caching. Any other provider prefix goes through
+pydantic-ai's `infer_model`, so every provider pydantic-ai supports works
+without code changes here.
 
-A target spec may pin OpenRouter upstream hosts with an `@` suffix:
-`openrouter/deepseek-v4-flash@streamlake` or `...@streamlake,baidu`. Pinned
-requests never fall back to other hosts. `bench-cache hosts <target>` lists the
-host slugs that serve a target's model.
+OpenRouter specs may pin upstream hosts with an `@` suffix:
+`openrouter:deepseek/deepseek-v4-flash@streamlake` or `...@streamlake,baidu`.
+Pinned requests never fall back to other hosts. `bench-cache hosts <spec>`
+lists the host slugs that serve a model.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic_ai.models import Model
+from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -29,43 +31,45 @@ from pydantic_ai.settings import ModelSettings
 BASE_SETTINGS: ModelSettings = {"temperature": 0.0, "max_tokens": 300}
 
 
-Factory = Callable[[str, list[str]], tuple[Model, ModelSettings]]
+Factory = Callable[[str, tuple[str, ...]], tuple[Model, ModelSettings]]
 """(model_id, pinned upstream hosts; empty means default routing) -> (model, settings)."""
 
 
 @dataclass(frozen=True)
 class Target:
     name: str
-    description: str
+    """The spec as given, e.g. `openrouter:deepseek/deepseek-v4-flash@baidu`; labels results."""
+    provider: str
     model_id: str
-    factory: Factory
-    only: tuple[str, ...] = ()
+    hosts: tuple[str, ...] = ()
     """Pinned OpenRouter upstream host slugs; empty means OpenRouter's default routing."""
 
     def build(self) -> tuple[Model, ModelSettings]:
-        return self.factory(self.model_id, list(self.only))
+        factory = FACTORIES[self.provider].factory if self.provider in FACTORIES else _inferred(self.provider)
+        return factory(self.model_id, self.hosts)
 
 
-def _openrouter(model_id: str, only: list[str]) -> tuple[Model, ModelSettings]:
+def _openrouter(model_id: str, hosts: tuple[str, ...]) -> tuple[Model, ModelSettings]:
     """Model served through OpenRouter's Chat Completions endpoint.
 
     With default routing OpenRouter picks the upstream host and relies on sticky
     routing to keep a conversation on the same host (each host has its own cache).
     """
     model = OpenRouterModel(model_id, provider=OpenRouterProvider())
+    # mypy can't match a ModelSettings spread to the subtype's optional keys, though every key fits.
     settings: OpenRouterModelSettings = {
-        **BASE_SETTINGS,
+        **BASE_SETTINGS,  # type: ignore[typeddict-item]
         # Reasoning traces are typically stripped from history on the next
         # turn, which changes the prefix. Keep the measured prefix exact.
         "openrouter_reasoning": {"enabled": False},
         "openrouter_usage": {"include": True},
     }
-    if only:
-        settings["openrouter_provider"] = {"only": only, "allow_fallbacks": False}
+    if hosts:
+        settings["openrouter_provider"] = {"only": list(hosts), "allow_fallbacks": False}
     return model, settings
 
 
-def _openrouter_responses(model_id: str, only: list[str]) -> tuple[Model, ModelSettings]:
+def _openrouter_responses(model_id: str, hosts: tuple[str, ...]) -> tuple[Model, ModelSettings]:
     """Model served through OpenRouter's OpenAI-compatible Responses endpoint (/api/v1/responses).
 
     Stateless: the full history is re-sent every turn (no `previous_response_id`),
@@ -74,40 +78,50 @@ def _openrouter_responses(model_id: str, only: list[str]) -> tuple[Model, ModelS
     """
     model = OpenAIResponsesModel(model_id, provider=OpenRouterProvider())
     extra_body: dict[str, object] = {"reasoning": {"enabled": False}}
-    if only:
-        extra_body["provider"] = {"only": only, "allow_fallbacks": False}
-    settings: OpenAIResponsesModelSettings = {**BASE_SETTINGS, "extra_body": extra_body}
+    if hosts:
+        extra_body["provider"] = {"only": list(hosts), "allow_fallbacks": False}
+    settings: OpenAIResponsesModelSettings = {**BASE_SETTINGS, "extra_body": extra_body}  # type: ignore[typeddict-item]
     return model, settings
 
 
-TARGETS: dict[str, Target] = {
-    t.name: t
-    for t in [
-        Target(
-            name="openrouter/deepseek-v4-flash",
-            description="DeepSeek V4 Flash via OpenRouter Chat Completions, default routing",
-            model_id="deepseek/deepseek-v4-flash",
-            factory=_openrouter,
-        ),
-        Target(
-            name="openrouter-responses/deepseek-v4-flash",
-            description="DeepSeek V4 Flash via OpenRouter Responses API, default routing",
-            model_id="deepseek/deepseek-v4-flash",
-            factory=_openrouter_responses,
-        ),
-    ]
+def _inferred(provider: str) -> Factory:
+    """Any other pydantic-ai provider, with thinking off through the cross-provider setting."""
+
+    def factory(model_id: str, hosts: tuple[str, ...]) -> tuple[Model, ModelSettings]:
+        return infer_model(f"{provider}:{model_id}"), {**BASE_SETTINGS, "thinking": False}
+
+    return factory
+
+
+@dataclass(frozen=True)
+class ProviderFactory:
+    description: str
+    factory: Factory
+    pins_hosts: bool = False
+    """Accepts `@host[,host...]` to pin OpenRouter upstream hosts."""
+
+
+FACTORIES: dict[str, ProviderFactory] = {
+    "openrouter": ProviderFactory("OpenRouter Chat Completions; OPENROUTER_API_KEY", _openrouter, pins_hosts=True),
+    "openrouter-responses": ProviderFactory(
+        "OpenRouter Responses API, stateless; OPENROUTER_API_KEY", _openrouter_responses, pins_hosts=True
+    ),
 }
 
 
 def resolve_target(spec: str) -> Target:
-    """Look up `name` or `name@host[,host...]`, returning the target with those hosts pinned."""
-    base, sep, hosts = spec.partition("@")
-    if base not in TARGETS:
-        raise KeyError(f"unknown target {base!r}; have {sorted(TARGETS)}")
-    only = tuple(h.strip() for h in hosts.split(",") if h.strip())
-    if sep and not only:
-        raise ValueError(f"target spec {spec!r} has '@' but no host slugs")
-    return dataclasses.replace(TARGETS[base], name=spec, only=only)
+    """Parse `provider:model_id`, plus `@host[,host...]` for providers that pin OpenRouter hosts."""
+    provider, sep, model_id = spec.partition(":")
+    if not sep or not provider or not model_id:
+        raise ValueError(f"target {spec!r} is not provider:model, e.g. openai:gpt-5-mini")
+    hosts: tuple[str, ...] = ()
+    # Only split on '@' where it means hosts: other providers may use it in model ids.
+    if provider in FACTORIES and FACTORIES[provider].pins_hosts:
+        model_id, at, host_list = model_id.partition("@")
+        hosts = tuple(h.strip() for h in host_list.split(",") if h.strip())
+        if at and not hosts:
+            raise ValueError(f"target {spec!r} has '@' but no host slugs")
+    return Target(name=spec, provider=provider, model_id=model_id, hosts=hosts)
 
 
 def list_hosts(model_id: str) -> list[dict[str, Any]]:

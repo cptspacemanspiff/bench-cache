@@ -12,27 +12,29 @@ from pathlib import Path
 
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UserError
 
 from .plot import render
 from .runner import ConversationResult, run_conversation
 from .scenario import DEFAULT_PROMPTS_DIR, list_scenarios, load_scenario
-from .targets import TARGETS, list_hosts, resolve_target
+from .targets import FACTORIES, list_hosts, resolve_target
 
-DEFAULT_RESULTS_DIR = Path(__file__).resolve().parents[2] / "results"
+DEFAULT_RESULTS_DIR = Path("results")
 
 
 def _print_result(r: ConversationResult) -> None:
     params = " ".join(f"{k}={v}" for k, v in r.params.items())
     print(f"\n{r.target}  scenario={r.scenario}  repeat={r.repeat}  key={r.run_key}  {params}".rstrip())
-    header = f"{'turn':>4} {'expect':>6} {'input':>7} {'cached':>7} {'write':>6} {'output':>6} {'hit%':>6} {'reuse%':>7} {'lat s':>6} {'cost $':>10} {'upstream':<12} verdict"
+    header = (
+        f"{'turn':>4} {'expect':>6} {'input':>7} {'cached':>7} {'write':>6} {'output':>6} {'hit%':>6} "
+        f"{'reuse%':>7} {'lat s':>6} {'cost $':>10} {'upstream':<12} verdict"
+    )
     print(header)
     print("-" * len(header))
     for t in r.turns:
         reuse = f"{t.prefix_reuse:7.1%}" if t.prefix_reuse is not None else f"{'-':>7}"
-        cost = t.provider_details.get("cost")
-        cost_s = f"{cost:10.6f}" if isinstance(cost, int | float) else f"{'-':>10}"
-        upstream = str(t.provider_details.get("downstream_provider", "-"))
+        cost_s = f"{t.cost_usd:10.6f}" if t.cost_usd is not None else f"{'-':>10}"
+        upstream = t.upstream or "-"
         print(
             f"{t.turn:>4} {t.expect:>6} {t.input_tokens:>7} {t.cache_read_tokens:>7} {t.cache_write_tokens:>6} "
             f"{t.output_tokens:>6} {t.hit_rate:6.1%} {reuse} {t.latency_s:6.2f} {cost_s} {upstream:<12} {t.verdict}"
@@ -69,8 +71,10 @@ async def _run(args: argparse.Namespace) -> int:
     scenario = load_scenario(args.scenario, args.prompts_dir).with_params(dict(args.param))
     try:
         targets = [resolve_target(spec) for spec in args.target]
-    except (KeyError, ValueError) as e:
-        print(f"{e.args[0]}; see `bench-cache list`", file=sys.stderr)
+        for target in targets:
+            target.build()  # fail on an unknown provider or missing API key before any spend
+    except (ValueError, UserError, ImportError) as e:
+        print(f"{e}; see `bench-cache list`", file=sys.stderr)
         return 2
 
     results: list[ConversationResult] = []
@@ -93,7 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     if len(results) > 1:
         print("\nper target, all repeats:")
-        for target_name in args.target:
+        for target_name in dict.fromkeys(args.target):
             rs = [r for r in results if r.target == target_name]
             if rs:
                 inp, cached, cacheable = (
@@ -118,21 +122,35 @@ def _list(args: argparse.Namespace) -> int:
         print(f"  {name:<28} {scenario.description}")
         if scenario.params:
             print(f"  {'':<28} params: " + " ".join(f"{k}={v}" for k, v in scenario.params.items()))
-    print("targets:")
-    for t in TARGETS.values():
-        print(f"  {t.name:<40} {t.description}")
-    print("\npin upstream hosts with name@host[,host...]; `bench-cache hosts <target>` lists host slugs")
+    print("targets: provider:model_id")
+    for name, f in FACTORIES.items():
+        hosts = "[@host,...]" if f.pins_hosts else ""
+        print(f"  {name + ':<model_id>' + hosts:<44} {f.description}")
+    print(f"  {'<provider>:<model_id>':<44} any other pydantic-ai provider, e.g. openai:gpt-5-mini")
+    print("\n@host pins OpenRouter upstream hosts; `bench-cache hosts <target>` lists host slugs")
     return 0
 
 
 def _hosts(args: argparse.Namespace) -> int:
-    target = resolve_target(args.target)
+    try:
+        target = resolve_target(args.target)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    factory = FACTORIES.get(target.provider)
+    if not (factory and factory.pins_hosts):
+        print(f"{target.provider!r} has no upstream hosts to list; only OpenRouter targets do", file=sys.stderr)
+        return 2
     print(f"{target.model_id} upstream hosts (USD per 1M tokens):")
     print(f"  {'slug':<16} {'provider':<16} {'tag':<22} {'input':>8} {'cache read':>10}")
     for h in list_hosts(target.model_id):
-        price = lambda v: f"{float(v) * 1e6:.4f}" if v is not None else "-"  # noqa: E731
-        print(f"  {h['slug']:<16} {h['name']:<16} {h['tag']:<22} {price(h['prompt']):>8} {price(h['cache_read']):>10}")
+        prompt, cache_read = _per_million(h["prompt"]), _per_million(h["cache_read"])
+        print(f"  {h['slug']:<16} {h['name']:<16} {h['tag']:<22} {prompt:>8} {cache_read:>10}")
     return 0
+
+
+def _per_million(price_per_token: str | None) -> str:
+    return f"{float(price_per_token) * 1e6:.4f}" if price_per_token is not None else "-"
 
 
 def _scalar(raw: str) -> int | float | str:
@@ -161,13 +179,19 @@ def main() -> None:
 
     sub.add_parser("list", help="list scenarios and targets").set_defaults(func=_list)
 
-    h = sub.add_parser("hosts", help="list OpenRouter upstream hosts that serve a target's model")
+    h = sub.add_parser("hosts", help="list OpenRouter upstream hosts that serve an OpenRouter target's model")
     h.add_argument("target")
     h.set_defaults(func=_hosts)
 
     r = sub.add_parser("run", help="run a scenario against one or more targets")
     r.add_argument("scenario")
-    r.add_argument("-t", "--target", action="append", required=True, help="target name, optionally name@host[,host...] to pin upstream hosts (repeatable)")
+    r.add_argument(
+        "-t",
+        "--target",
+        action="append",
+        required=True,
+        help="provider:model_id; OpenRouter targets take @host[,host...] to pin upstream hosts (repeatable)",
+    )
     r.add_argument(
         "-p", "--param", type=_param, action="append", default=[], metavar="NAME=VALUE", help="scenario parameter"
     )

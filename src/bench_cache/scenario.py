@@ -24,7 +24,7 @@ from typing import Any, Literal
 Expectation = Literal["miss", "hit", "any"]
 PromptFn = Callable[..., Any]
 
-DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+DEFAULT_PROMPTS_DIR = Path("prompts")
 
 
 @dataclass(frozen=True)
